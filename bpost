@@ -1,0 +1,107 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use LWP::UserAgent;
+use JSON qw(encode_json decode_json);
+use POSIX qw(strftime);
+
+# read/setup tokens
+
+our $access_info = read_auth_info();
+
+unless ($access_info) {
+	print "Enter your bsky.app handle: (like example.bsky.social) ";
+	chomp(my $handle = <STDIN>);
+	print "Enter your bsky.app password: ";
+	chomp(my $password = <STDIN>);
+	$access_info = authenticate($handle, $password);
+	print Dumper($access_info);
+	save_auth_info($access_info);
+}
+
+post($ARGV[0]);
+
+exit(0);
+
+sub post {
+	my ($text) = @_;
+
+	# Example: Post to bsky.app using the obtained access token
+	my $data = {
+	repo => $access_info->{handle},
+	collection => "app.bsky.feed.post",
+	record => {
+		"text" => $text,
+		"createdAt" => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime),
+	},
+	};
+
+	my $ua = LWP::UserAgent->new;
+	my $response = $ua->post(
+		'https://bsky.social/xrpc/com.atproto.repo.createRecord',
+		'Authorization' => "Bearer ".$access_info->{accessJwt},
+		'Content-Type' => "application/json",
+		Content => encode_json($data)
+	);
+
+	use Data::Dumper;
+	print Dumper($response);
+	if ($response->is_success) {
+		print "Posted to bsky.app successfully.\n";
+	} else {
+		die "Failed to post to bsky.app: " . $response->status_line;
+	}
+}
+
+# Function to read authentication information from file
+sub read_auth_info {
+	my $auth_file = 'auth.txt';
+	if (-e $auth_file) {
+		open my $fh, '<', $auth_file or die "Cannot open $auth_file: $!";
+		my $access_info = { };
+	chomp($access_info->{handle} = <$fh>);
+	chomp($access_info->{refreshJwt} = <$fh>);
+	chomp($access_info->{accessJwt} = <$fh>);
+		close $fh;
+		return $access_info;
+	} else {
+		return;
+	}
+}
+
+# Function to authenticate and get access token
+sub authenticate {
+	my ($handle, $password) = @_;
+	my $ua = LWP::UserAgent->new;
+	my $req = {
+			identifier => $handle,
+			password => $password
+	};
+	my $response = $ua->post(
+		'https://bsky.social/xrpc/com.atproto.server.createSession',
+		'Content-Type' => 'application/json',
+		Content => encode_json($req),
+	);
+
+	if ($response->is_success) {
+		my $auth_info = decode_json($response->decoded_content);
+		return $auth_info;
+	} else {
+		use Data::Dumper;
+	
+		print "Failed to authenticate: " . $response->status_line . "\n";
+		die Dumper($response);
+	}
+}
+
+# Function to save authentication token to file
+sub save_auth_info {
+	my $access_info = shift;
+	my $auth_file = 'auth.txt';
+	open my $fh, '>', $auth_file or die "Cannot open $auth_file: $!";
+	printf $fh "%s\n", $access_info->{handle};
+	printf $fh "%s\n", $access_info->{refreshJwt};
+	printf $fh "%s\n", $access_info->{accessJwt};
+	close $fh;
+}
