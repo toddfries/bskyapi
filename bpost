@@ -1,10 +1,26 @@
 #!/usr/bin/perl
 
+# Copyright (c) 2024 Todd T. Fries <todd@fries.net>
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 use strict;
 use warnings;
 use LWP::UserAgent;
 use JSON qw(encode_json decode_json);
 use POSIX qw(strftime);
+use Getopt::Std;
+use Data::Dumper;
 
 # read/setup tokens
 
@@ -20,12 +36,44 @@ unless ($access_info) {
 	save_auth_info($access_info);
 }
 
-post($ARGV[0]);
+our $opt_a; # action
+
+getopts('a:');
+
+my $ua = LWP::UserAgent->new;
+$ua->default_header('Authorization' => "Bearer ".$access_info->{access});
+
+if (defined $opt_a) {
+	if ($opt_a eq "post") {
+		post($ARGV[0]);
+		exit(0);
+	}
+	if ($opt_a eq "lsdm") {
+		lsdm();
+		exit(0);
+	}
+}
 
 exit(0);
 
+sub lsdm {
+	my $url = 'https://api.bsky.app/xrpc/chat.bsky.convo.listConvos';
+
+	my $response = $ua->get( $url );
+
+	print Dumper($response);
+	if ($response->is_success) {
+		print "Requested list was successfully.\n";
+	} else {
+		die "Failed to post to bsky.app: " . $response->status_line;
+	}
+
+	return $response;
+}
+
 sub post {
 	my ($text) = @_;
+	my $url = 'https://bsky.social/xrpc/com.atproto.repo.createRecord';
 
 	# Example: Post to bsky.app using the obtained access token
 	my $data = {
@@ -39,13 +87,12 @@ sub post {
 
 	my $ua = LWP::UserAgent->new;
 	my $response = $ua->post(
-		'https://bsky.social/xrpc/com.atproto.repo.createRecord',
-		'Authorization' => "Bearer ".$access_info->{accessJwt},
+		$url,
+		'Authorization' => "Bearer ".$access_info->{access},
 		'Content-Type' => "application/json",
 		Content => encode_json($data)
 	);
 
-	use Data::Dumper;
 	print Dumper($response);
 	if ($response->is_success) {
 		print "Posted to bsky.app successfully.\n";
@@ -61,8 +108,8 @@ sub read_auth_info {
 		open my $fh, '<', $auth_file or die "Cannot open $auth_file: $!";
 		my $access_info = { };
 	chomp($access_info->{handle} = <$fh>);
-	chomp($access_info->{refreshJwt} = <$fh>);
-	chomp($access_info->{accessJwt} = <$fh>);
+	chomp($access_info->{refresh} = <$fh>);
+	chomp($access_info->{access} = <$fh>);
 		close $fh;
 		return $access_info;
 	} else {
@@ -88,8 +135,6 @@ sub authenticate {
 		my $auth_info = decode_json($response->decoded_content);
 		return $auth_info;
 	} else {
-		use Data::Dumper;
-	
 		print "Failed to authenticate: " . $response->status_line . "\n";
 		die Dumper($response);
 	}
@@ -101,7 +146,7 @@ sub save_auth_info {
 	my $auth_file = 'auth.txt';
 	open my $fh, '>', $auth_file or die "Cannot open $auth_file: $!";
 	printf $fh "%s\n", $access_info->{handle};
-	printf $fh "%s\n", $access_info->{refreshJwt};
-	printf $fh "%s\n", $access_info->{accessJwt};
+	printf $fh "%s\n", $access_info->{refresh};
+	printf $fh "%s\n", $access_info->{access};
 	close $fh;
 }
