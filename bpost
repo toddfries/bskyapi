@@ -22,6 +22,7 @@ use POSIX qw(strftime);
 use Getopt::Std;
 use Storable qw(freeze thaw);
 use Data::Dumper;
+use Date::Manip;
 
 # read/setup tokens
 
@@ -113,7 +114,7 @@ sub post {
 
 	my $response = post1( $call, $data );
 
-	print Dumper($response);
+	#print Dumper($response);
 	if ($response->is_success) {
 		print "Posted to bsky.app successfully.\n";
 	} else {
@@ -278,8 +279,12 @@ sub _call {
 	if ($v>0 && $type eq "post") {
 		print "   pdata after request: ".Dumper($pdata);
 	}
+	my $hdrs = parse_headers($c);
+	show_limits($name, $hdrs->{lims});
+	my $problem = 0;
 	if ($@) {
-		die sprintf("get failed: %s", $@);
+		warn sprintf("get failed: %s", $@);
+		$problem = 1;
 	}
 	if (!defined $c) {
 		die("\$c is undef");
@@ -287,8 +292,133 @@ sub _call {
 	if ($v>0) {
 		print "c: ".Dumper($c)."\n";
 	}
-	print "c = ".Dumper($c);
-
+	if (! $c->is_success) {
+		$problem = 1;
+	}
+	if ($problem > 0) {
+		my $dc = $c->decoded_content;
+		my $data = decode_json($dc);
+		if (!defined $data) {
+			print "data = undef, hmm. c:\n";
+			print Dumper($c);
+			die("_call status filure");
+		}
+		my $err = "";
+		if (defined $data->{status}) {
+			$err .= $data->{status};
+		} else {
+			$err .= "???";
+		}
+		if (defined $data->{title}) {
+			$err .= ": ".$data->{title};
+		}
+		if (defined $data->{detail} && $data->{title} ne $data->{detail}) {
+			$err .= ": ".$data->{detail};
+		}
+		if (defined $data->{errors}) {
+			$err .= ": errros = ".Dumper($data->{errors});
+		}
+		if (defined $data->{type} && $data->{type} ne "about:blank") {
+			$err .= "\n	".$data->{type};
+		}
+		$err .= "\n";
+		my $estat = "";
+		if ($v>0) {
+			foreach my $s (sort keys %{$hdrs->{stats}}) {
+				$estat .= sprintf "\t%s = %s\n", $s, $hdrs->{stats}->{$s};
+			}
+			$estat .= "\n";
+		}
+		print STDERR $err.$estat;
+		die("Today is a good day to die.");
+	}
 	return $c;
 }
 
+sub parse_headers {
+	my ($resp) = @_;
+
+	my $lims = { };
+	my $stats = { };
+	if ($v>0) {
+		print STDERR "Headers:\n";
+	}
+	for my $h ($resp->header_field_names) {
+		my $val = $resp->header($h);
+		if (! defined $val) {
+			next;
+		}
+		if ($h =~ /^ratelimit-(limit|remaining|reset|policy)/i) {
+			my $lim = "std";
+			my $ltype = lc($1);
+			if ($v>0) {
+				printf STDERR "\t.. %s .. %s\n", $lim, $ltype;
+			}
+			$lims->{$lim}->{$ltype} = $val;
+			next;
+		}
+		if ($h =~ /^(x-(con|res|tran|acc)|cont|date|server|api)/i) {
+			$stats->{$h} = $val;
+			next;
+		}
+		if ($v>0) {
+			printf STDERR "\t!header handled: %s = '%s'\n", $h, $resp->header($h);
+		}
+	}
+	if ($v>0) {
+		print STDERR "\n";
+	}
+	my $tmp = {
+		lims => $lims,
+		stats => $stats,
+	};
+	return $tmp;
+}
+sub check_limits {
+	my ($name, $lims) = @_;
+	my $timestamp = Date::Manip::Date->new();
+	my $wait = 0;
+	for my $lim (keys %{ $lims }) {
+		if ($lims->{$lim}->{remaining} < 1) {
+			$timestamp->parse("epoch ".$lims->{$lim}->{reset});
+			printf STDERR "Matched limit %s.%s { %d/%d, %s }...\n",
+				$name, $lim,
+				$lims->{$lim}->{remaining},
+				$lims->{$lim}->{limit},
+				$timestamp->printf("%Y%m%d %H:%M:%S");
+			my $thiswait = $lims->{$lim}->{reset};
+			if ($thiswait < 1) {
+				warn("lim ${name}.$lim reset is $thiswait");
+				continue;
+			}
+			if ($wait < 1 || ( $wait > 0 && $wait > $thiswait ) ) {
+				$wait = $thiswait;
+			}
+		} else {
+			$timestamp->parse("epoch ".$lims->{$lim}->{reset});
+			printf STDERR "!Matched limit %s.%s { %d/%d, %s }...\n",
+				$name, $lim,
+				$lims->{$lim}->{remaining},
+				$lims->{$lim}->{limit},
+				$timestamp->printf("%Y%m%d %H:%M:%S");
+		}
+	}
+	if ($wait > 0) {
+		wait_till($name, $wait);
+		return 1;
+	}
+	return 0;
+}
+sub show_limits {
+	my ($name, $lims) = @_;
+	my $timestamp = Date::Manip::Date->new();
+
+	for my $lim (keys %{ $lims }) {
+		$timestamp->parse("epoch ".$lims->{$lim}->{reset});
+		printf "  %s.%s = {%d/%d (%s), %s}\n", $name, $lim,
+			$lims->{$lim}->{remaining},
+			$lims->{$lim}->{limit},
+			$lims->{$lim}->{policy},
+			$timestamp->printf("%Y%m%d %H:%M:%S");
+	}
+}
