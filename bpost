@@ -31,8 +31,9 @@ our $uribase = 'https://bsky.social/xrpc/';
 
 our $opt_a; # action
 our $opt_v; # verbose
+our $opt_W; # reply post url
 
-getopts('a:v');
+getopts('a:vW:');
 
 our $v = 0;
 if (defined $opt_v) {
@@ -111,6 +112,14 @@ sub post {
 		"createdAt" => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime),
 	},
 	};
+
+	if (defined $opt_W) {
+		my $fluff = getrec($opt_W);
+		$data->{record}->{reply}->{root}->{uri} = $fluff->{root}->{uri};
+		$data->{record}->{reply}->{root}->{cid} = $fluff->{root}->{cid};
+		$data->{record}->{reply}->{parent}->{uri} = $fluff->{parent}->{uri};
+		$data->{record}->{reply}->{parent}->{cid} = $fluff->{parent}->{cid};
+	}
 
 	my $response = post1( $call, $data );
 
@@ -421,4 +430,38 @@ sub show_limits {
 			$lims->{$lim}->{policy},
 			$timestamp->printf("%Y%m%d %H:%M:%S");
 	}
+}
+sub getrec {
+	my ($url) = @_;
+	if ($url =~ /\/profile\/(.*)\/post\/(.*)$/) {
+		my $repo = $1;
+		my $postid = $2;
+		my $c = get1("com.atproto.repo.getRecord?repo=${repo}&collection=app.bsky.feed.post&rkey=$postid");
+		print "getrec: ";
+		if ($c->is_success) {
+			my $dc = $c->decoded_content;
+			my $data = decode_json($dc);
+			print "data = ".Dumper($data);
+			my $parent = {
+				cid => $data->{cid},
+				uri => $data->{uri},
+			};
+			my $root = {
+				cid => $data->{value}->{reply}->{root}->{cid},
+				uri => $data->{value}->{reply}->{root}->{uri},
+			};
+			my $tmp = {
+				root => $root,
+				parent => $parent,
+			};
+			if (!defined $root->{cid}) {
+				$tmp->{root} = $parent;
+			}
+			return $tmp;
+		} else {
+			print "c = ".Dumper($c);
+			die "getrec oops";
+		}
+	}
+	die "getrec bad url: $url";
 }
