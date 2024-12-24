@@ -20,28 +20,32 @@ use LWP::UserAgent;
 use JSON qw(encode_json decode_json);
 use POSIX qw(strftime);
 use Getopt::Std;
+use Storable qw(freeze thaw);
 use Data::Dumper;
 
 # read/setup tokens
 
-our $access_info = read_auth_info();
-
-unless ($access_info) {
-	print "Enter your bsky.app handle: (like example.bsky.social) ";
-	chomp(my $handle = <STDIN>);
-	print "Enter your bsky.app password: ";
-	chomp(my $password = <STDIN>);
-	$access_info = authenticate($handle, $password);
-	print Dumper($access_info);
-	save_auth_info($access_info);
-}
+our $access_info;
+our $uribase = 'https://bsky.social/xrpc/';
 
 our $opt_a; # action
+our $opt_v; # verbose
 
-getopts('a:');
+getopts('a:v');
 
-my $ua = LWP::UserAgent->new;
-$ua->default_header('Authorization' => "Bearer ".$access_info->{access});
+our $v = 0;
+if (defined $opt_v) {
+	$v = $opt_v;
+}
+our $client = { };
+$client->{1} = LWP::UserAgent->new(
+	timeout => 60,
+	max_redirect => 7,
+);
+$client->{1}->default_header('Atproto-Proxy' => 'did:web:api.bsky.chat#bsky_chat');
+$client->{1}->default_header('Content-Type' => 'application/json');
+
+token_check();
 
 if (defined $opt_a) {
 	if ($opt_a eq "post") {
@@ -52,19 +56,41 @@ if (defined $opt_a) {
 		lsdm();
 		exit(0);
 	}
+	if ($opt_a eq "get") {
+		my $c = get1($ARGV[0]);
+		if ($c->is_success) {
+			my $dc = $c->decoded_content;
+			my $data = decode_json($dc);
+			print "data = ".Dumper($data);
+		} else {
+			print "c = ".Dumper($c);
+		}
+		exit(0);
+	}
 }
 
 exit(0);
 
 sub lsdm {
-	my $url = 'https://api.bsky.app/xrpc/chat.bsky.convo.listConvos';
+	my $call = 'chat.bsky.convo.listConvos';
 
-	my $response = $ua->get( $url );
+	_redo_lsdm:
+	my $response = get1( $call );
+	if (!$response->is_success) {
+		my $dc = $response->decoded_content;
+		my $data = decode_json($dc);
+		if ($data->{error} eq "ExpiredToken") {
+			token_refresh();
+			goto _redo_lsdm;
+		}
+	}
 
-	print Dumper($response);
+	#print Dumper($response);
 	if ($response->is_success) {
 		print "Requested list was successfully.\n";
 	} else {
+		print Dumper($response->headers_as_string);
+		print Dumper($response->decoded_content);
 		die "Failed to post to bsky.app: " . $response->status_line;
 	}
 
@@ -73,7 +99,7 @@ sub lsdm {
 
 sub post {
 	my ($text) = @_;
-	my $url = 'https://bsky.social/xrpc/com.atproto.repo.createRecord';
+	my $call = 'com.atproto.repo.createRecord';
 
 	# Example: Post to bsky.app using the obtained access token
 	my $data = {
@@ -85,13 +111,7 @@ sub post {
 	},
 	};
 
-	my $ua = LWP::UserAgent->new;
-	my $response = $ua->post(
-		$url,
-		'Authorization' => "Bearer ".$access_info->{access},
-		'Content-Type' => "application/json",
-		Content => encode_json($data)
-	);
+	my $response = post1( $call, $data );
 
 	print Dumper($response);
 	if ($response->is_success) {
@@ -105,11 +125,15 @@ sub post {
 sub read_auth_info {
 	my $auth_file = 'auth.txt';
 	if (-e $auth_file) {
-		open my $fh, '<', $auth_file or die "Cannot open $auth_file: $!";
+		open my $fh, '<', $auth_file or die "Can't open $auth_file: $!";
 		my $access_info = { };
-	chomp($access_info->{handle} = <$fh>);
-	chomp($access_info->{refresh} = <$fh>);
-	chomp($access_info->{access} = <$fh>);
+		chomp($access_info->{handle} = <$fh>);
+		chomp($access_info->{refreshJwt} = <$fh>);
+		chomp($access_info->{accessJwt} = <$fh>);
+		my $tmp = <$fh>;
+		if (defined $tmp) {
+			chomp($access_info->{last_refresh} = $tmp);
+		}
 		close $fh;
 		return $access_info;
 	} else {
@@ -120,16 +144,12 @@ sub read_auth_info {
 # Function to authenticate and get access token
 sub authenticate {
 	my ($handle, $password) = @_;
-	my $ua = LWP::UserAgent->new;
 	my $req = {
 			identifier => $handle,
 			password => $password
 	};
-	my $response = $ua->post(
-		'https://bsky.social/xrpc/com.atproto.server.createSession',
-		'Content-Type' => 'application/json',
-		Content => encode_json($req),
-	);
+	my $call = 'com.atproto.server.createSession';
+	my $response = _call(1, "post", $call, $req);
 
 	if ($response->is_success) {
 		my $auth_info = decode_json($response->decoded_content);
@@ -143,10 +163,132 @@ sub authenticate {
 # Function to save authentication token to file
 sub save_auth_info {
 	my $access_info = shift;
+	print "access_info = ".Dumper($access_info);
 	my $auth_file = 'auth.txt';
 	open my $fh, '>', $auth_file or die "Cannot open $auth_file: $!";
 	printf $fh "%s\n", $access_info->{handle};
-	printf $fh "%s\n", $access_info->{refresh};
-	printf $fh "%s\n", $access_info->{access};
+	printf $fh "%s\n", $access_info->{refreshJwt};
+	printf $fh "%s\n", $access_info->{accessJwt};
+	printf $fh "%s\n", time; # save when last refresh occurred
 	close $fh;
 }
+
+
+sub token_refresh {
+	my $call = 'com.atproto.server.refreshSession';
+	$client->{1}->default_header(
+		'Authorization' => "Bearer " . $access_info->{refreshJwt}
+	);
+	my $response = _call(1, "post", $call);
+
+	if ($response->is_success) {
+		my $new_auth_info = decode_json($response->decoded_content);
+		$access_info->{accessJwt} = $new_auth_info->{accessJwt};
+		save_auth_info($access_info);
+		$client->{1}->default_header(
+			'Authorization' => "Bearer " . $access_info->{accessJwt}
+		);
+		return $access_info;
+	} else {
+		print "Failed to refresh token: " . $response->status_line . "\n";
+		die Dumper($response);
+	}
+}
+
+sub token_check {
+	if (!defined $access_info) {
+		$access_info = read_auth_info();
+	}
+	my $handle;
+	if (!defined $access_info->{handle}) {
+		print "Enter your bsky.app handle: (like example.bsky.social) ";
+		chomp($handle = <STDIN>);
+		$access_info->{handle} = $handle;
+	}
+	if (!defined $access_info->{accessJwt}) {
+		$handle = $access_info->{handle};
+		print "Enter your bsky.app password: ";
+		chomp(my $password = <STDIN>);
+		$access_info = authenticate($handle, $password);
+		print Dumper($access_info);
+		save_auth_info($access_info);
+	}
+	$client->{1}->default_header('Authorization' => "Bearer ".$access_info->{accessJwt});
+
+	# Implement logic here, e.g., time check or error handling for expired tokens
+	# For a simple time check:
+	my $current_time = time;
+	my $last_refresh_time = $access_info->{last_refresh} // 0; # Assuming you save this somewhere
+	if ($current_time - $last_refresh_time > 7200) {
+		$access_info = token_refresh();
+	}
+}
+
+sub get1 {
+	my ($call) = @_;
+	token_check();
+	return _call(1, "get", $call);
+}
+sub post1 {
+	my ($call, $data) = @_;
+	token_check();
+	return _call(1, "post", $call, $data);
+}
+
+sub _call {
+	my ($ver, $type, $query, $pdata) = @_;
+	my $name = $query;
+	$name =~ s/\?.*$//;
+	$name =~ s/\/[0-9]{1,}/\/:id/;
+	my ($data, $c);
+
+	my $legit = 0;
+	for my $t (("get","post","delete","head")) {
+		if ($t eq $type) {
+			$legit++;
+			last;
+		}
+	}
+	if ($legit < 1) {
+		die("_call($ver, '${type}', $query): unhandled type");
+	}
+
+	my $savedata = thaw(freeze({ data => $pdata }));
+	_redo_action:
+	if ($v>0 || 1) {
+		printf "v$ver $type query=${query} @ %s\n", strftime( "%Y%m%d %H:%M:%S", localtime());
+		if ($type eq "post") {
+			print "   payload: ".Dumper($pdata);
+		}
+	}
+	$query = $uribase.$query;
+	my $req = HTTP::Request->new(uc($type) => $query);
+	my $payload;
+	if (defined $pdata) {
+		$payload = encode_json($pdata);
+		#$payload = $pdata;
+		$req = HTTP::Request->new(uc($type) => $query);
+		$req->header('Content-Type' => 'application/json');
+		$req->content($payload);
+	}
+	eval {
+		$c = $client->{$ver}->request($req);
+	};
+	$pdata = $savedata->{data};
+	if ($v>0 && $type eq "post") {
+		print "   pdata after request: ".Dumper($pdata);
+	}
+	if ($@) {
+		die sprintf("get failed: %s", $@);
+	}
+	if (!defined $c) {
+		die("\$c is undef");
+	}
+	if ($v>0) {
+		print "c: ".Dumper($c)."\n";
+	}
+	print "c = ".Dumper($c);
+
+	return $c;
+}
+
