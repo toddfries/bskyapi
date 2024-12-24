@@ -27,7 +27,6 @@ use Date::Manip;
 # read/setup tokens
 
 our $access_info;
-our $uribase = 'https://bsky.social/xrpc/';
 
 our $opt_a; # action
 our $opt_v; # verbose
@@ -56,6 +55,11 @@ if (defined $opt_a) {
 	}
 	if ($opt_a eq "lsdm") {
 		lsdm();
+		exit(0);
+	}
+	if ($opt_a eq "rhandle") {
+		my $did = resolve_handle($ARGV[0]);
+		print $did."\n";
 		exit(0);
 	}
 	if ($opt_a eq "get") {
@@ -149,6 +153,15 @@ sub read_auth_info {
 	} else {
 		return;
 	}
+}
+
+sub resolve_handle {
+	my ($handle) = @_;
+
+	my $c = get1( "com.atproto.identity.resolveHandle?handle=$handle" );
+	my $dc = $c->decoded_content;
+	my $data = decode_json($dc);
+	return $data->{did};
 }
 
 # Function to authenticate and get access token
@@ -261,6 +274,12 @@ sub _call {
 	}
 	if ($legit < 1) {
 		die("_call($ver, '${type}', $query): unhandled type");
+	}
+	my $uribase = 'https://bsky.social/xrpc/';
+	if ($query =~ /^chat/) {
+		$uribase = 'https://api.bsky.chat/xrpc/';
+	} elsif ($query =~ /^app.bsky.feed/) {
+		$uribase = 'https://public.api.bsky.app/xrpc/';
 	}
 
 	my $savedata = thaw(freeze({ data => $pdata }));
@@ -431,6 +450,7 @@ sub show_limits {
 			$timestamp->printf("%Y%m%d %H:%M:%S");
 	}
 }
+# XXX enhance based on https://docs.bsky.app/docs/advanced-guides/posts#replies
 sub getrec {
 	my ($url) = @_;
 	if ($url =~ /\/profile\/(.*)\/post\/(.*)$/) {
