@@ -85,19 +85,45 @@ sub lsdm {
 	if (!$response->is_success) {
 		my $dc = $response->decoded_content;
 		my $data = decode_json($dc);
+		# '{"error":"ExpiredToken","message":"Token has been revoked"}
 		if ($data->{error} eq "ExpiredToken") {
-			token_refresh();
+			if ($data->{message} eq "Token has been revoked") {
+				$access_info->{handle} = undef;
+				$access_info->{accessJwt} = undef;
+				token_check();
+			} else {
+				token_refresh();
+			}
 			goto _redo_lsdm;
 		}
 	}
 
 	#print Dumper($response);
-	if ($response->is_success) {
-		print "Requested list was successfully.\n";
-	} else {
+	if (! $response->is_success) {
 		print Dumper($response->headers_as_string);
 		print Dumper($response->decoded_content);
 		die "Failed to post to bsky.app: " . $response->status_line;
+	}
+
+	my $dc = $response->decoded_content;
+	my $data = decode_json($dc);
+
+	# sse json/chat.bsky.convo.listConvos*
+	#print "Convos data: ".Dumper($data);
+
+	my $lastdate = Date::Manip::Date->new();
+	for my $convo (@{ $data->{convos} }) {	
+		my $lastmsg = $convo->{lastMessage}->{sentAt};
+		my $mid = $convo->{id};
+		my $mem = $convo->{members};
+		$lastdate->parse($lastmsg);
+		printf "%s %s ",
+			$lastdate->printf("%Y%m%d %H:%M:%S"),
+			$mid;
+		for my $user (@{ $mem }) {
+			printf "%s ", $user->{handle};
+		}
+		print "\n";
 	}
 
 	return $response;
