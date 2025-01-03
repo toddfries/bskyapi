@@ -24,6 +24,10 @@ use Storable qw(freeze thaw);
 use Data::Dumper;
 use Date::Manip;
 
+# handle wide chars w/out warning
+binmode(STDOUT, ":encoding(UTF-8)");
+binmode(STDERR, ":encoding(UTF-8)");
+
 # read/setup tokens
 
 our $access_info;
@@ -73,9 +77,58 @@ if (defined $opt_a) {
 		}
 		exit(0);
 	}
+	if ($opt_a eq "notifications") {
+		ck_notifications();
+	}
 }
 
 exit(0);
+
+sub ck_notifications {
+	my $call = "app.bsky.notification.listNotifications";
+	my $c = get1( $call);
+	if (!$c->is_success) {
+		print "notifcation.list: ".Dumper($c);
+		exit(0);
+	}
+	my $dc = $c->decoded_content;
+	my $data = decode_json($dc);
+	# see json/app.bsky.notification.listNotifications.log
+	#print "data = ".Dumper($data);
+
+	# $data->{seenAt} = '2025-01-02T09:39:39.018Z';
+	# $data->{priority} = crazynes
+	# @{ $data->{notifications} }
+	my @notes = @{ $data->{notifications} };
+	printf "Notifications[%d]:\n", $#notes + 1;
+	for my $note (@notes) {
+		my $isread = $note->{isRead};
+		my $author = $note->{author};
+		my $reason = $note->{reason};
+		# 'like'|'repost'|'follow'|'mention'|'reply'|'quote'|
+		# 'starterpack-joined'
+		my $noteuri= $note->{uri};
+		my $record = $note->{record}; # { createdAt, subject, $type
+		my $cid    = $note->{cid};
+		my $idxtime= $note->{indexedAt};
+		my $who="";
+		if (defined $author->{displayName} && length($author->{displayName})>0) {
+			if ($v>0) {
+			printf "displayName: '%s' len=%d\n", $author->{displayName}, length($author->{displayName});
+			printf "handle: '%s'\n", $author->{handle};
+			}
+			$who = $author->{displayName};
+			$who .= "(\@".$author->{handle}.")";
+		} else {
+			$who = "\@".$author->{handle};
+		}
+		printf " > %s %7s %s\n",
+			$isread ? "r" : "N",
+			$reason,
+			$who;
+	}
+	exit(0);
+}
 
 sub lsdm {
 	my $call = 'chat.bsky.convo.listConvos';
