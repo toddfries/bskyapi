@@ -101,6 +101,9 @@ sub ck_notifications {
 	# @{ $data->{notifications} }
 	my @notes = @{ $data->{notifications} };
 	printf "Notifications[%d]:\n", $#notes + 1;
+	printf "Seen? %6s %24s %s\n",
+		"Reason",
+		"Time", "displayName(handle)";
 	for my $note (@notes) {
 		my $isread = $note->{isRead};
 		my $author = $note->{author};
@@ -108,9 +111,10 @@ sub ck_notifications {
 		# 'like'|'repost'|'follow'|'mention'|'reply'|'quote'|
 		# 'starterpack-joined'
 		my $noteuri= $note->{uri};
-		my $record = $note->{record}; # { createdAt, subject, $type
+		my $record = $note->{record}; # createdAt, subject, $type
 		my $cid    = $note->{cid};
 		my $idxtime= $note->{indexedAt};
+		my $cretime= $note->{record}->{createdAt};
 		my $who="";
 		if (defined $author->{displayName} && length($author->{displayName})>0) {
 			if ($v>0) {
@@ -122,12 +126,50 @@ sub ck_notifications {
 		} else {
 			$who = "\@".$author->{handle};
 		}
-		printf " > %s %7s %s\n",
+		printf " > %s %7s %24s %s\n",
 			$isread ? "r" : "N",
 			$reason,
+			$cretime,
 			$who;
+		fmt_record('     ', $note->{record});
 	}
 	exit(0);
+}
+
+sub fmt_record {
+	my ($space, $record) = @_;
+
+	my $id = '<undef>';
+	my ($uri,$txt);
+	my $type = $record->{'$type'};
+	if ($type eq 'app.bsky.graph.follow') {
+		$id = $record->{subject};
+	} elsif ($type eq 'app.bsky.feed.like') {
+		$id = $record->{subject}->{cid};
+		$uri = $record->{subject}->{uri};
+	} elsif ($type eq 'app.bsky.feed.post') {
+		$id = $record->{reply}->{parent}->{cid};
+		$uri = $record->{reply}->{parent}->{uri};
+		$txt = $record->{text};
+	} else {
+		$id = "Unhandled type: $type";
+	}
+
+	printf "%s%s %s\n",
+		$space,
+		$type,
+		$id;
+
+	if (defined $uri) {
+		printf "%s%s\n",
+			$space,
+			$uri;
+	}
+	if (defined $txt) {
+		$txt =~ s/^/${space}/g;
+		printf "%s\n",
+			$txt;
+	}
 }
 
 sub lsdm {
