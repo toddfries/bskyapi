@@ -80,10 +80,43 @@ if (defined $opt_a) {
 	if ($opt_a eq "notifications") {
 		ck_notifications();
 	}
+	if ($opt_a eq "feed") {
+		ck_feed(@ARGV);
+	}
 }
 
 exit(0);
 
+sub ck_feed {
+	my ($feedname) = @_;
+	my $call = "app.bsky.feed.getListFeed";
+	$call = "app.bsky.feed.getFeed";
+	#my $feed = "at://did:plc:jcoy7v3a2t4rcfdh6i4kza25/app.bsky.graph.list/astro";
+	my $feed = "at://did:plc:jcoy7v3a2t4rcfdh6i4kza25/app.bsky.feed.generator/$feedname";
+	#my $c = get1( $call."?list=$feed");
+	my $c = get1( $call."?feed=$feed");
+	if (!$c->is_success) {
+		print "notifcation.list: ".Dumper($c);
+		exit(0);
+	}
+	my $dc = $c->decoded_content;
+	my $data = decode_json($dc);
+	# see json/app.bsky.feed.getFeed.log
+	#print "data = ".Dumper($data);
+
+	my @feed = @{ $data->{feed} };
+	my $cursor = $data->{cursor};
+
+	printf "Feed: (%d)\n", $#feed + 1;
+	for my $felement ( @feed ) {
+		my $likes = $felement->{post}->{likeCount};
+		my $replies = $felement->{post}->{replyCount};
+		my $reposts = $felement->{post}->{repostCount};
+		my $quotes = $felement->{post}->{quoteCount};
+		my $name = fmt_record(' ', $felement->{post}->{record});
+		printf "> %d(L) %d(R) %d(RP) %d(Q) %s", $likes, $replies, $reposts, $quotes, $name;
+	}
+}
 sub ck_notifications {
 	my $call = "app.bsky.notification.listNotifications";
 	my $c = get1( $call);
@@ -115,29 +148,38 @@ sub ck_notifications {
 		my $cid    = $note->{cid};
 		my $idxtime= $note->{indexedAt};
 		my $cretime= $note->{record}->{createdAt};
-		my $who="";
-		if (defined $author->{displayName} && length($author->{displayName})>0) {
-			if ($v>0) {
-			printf "displayName: '%s' len=%d\n", $author->{displayName}, length($author->{displayName});
-			printf "handle: '%s'\n", $author->{handle};
-			}
-			$who = $author->{displayName};
-			$who .= "(\@".$author->{handle}.")";
-		} else {
-			$who = "\@".$author->{handle};
-		}
+		my $who=fmt_author($author);
 		printf " > %s %7s %24s %s\n",
 			$isread ? "r" : "N",
 			$reason,
 			$cretime,
 			$who;
-		fmt_record('     ', $note->{record});
+		print fmt_record('     ', $note->{record})."\n";
 	}
 	exit(0);
 }
 
+sub fmt_author {
+	my ($author) = @_;
+
+	my $ret = "";
+	if (defined $author->{displayName} && length($author->{displayName})>0) {
+		if ($v>0) {
+			printf "displayName: '%s' len=%d\n", $author->{displayName}, length($author->{displayName});
+			printf "handle: '%s'\n", $author->{handle};
+		}
+		$ret = $author->{displayName};
+		$ret .= "(\@".$author->{handle}.")";
+	} else {
+		$ret = "\@".$author->{handle};
+	}
+	return $ret;
+	return $ret;
+}
+
 sub fmt_record {
 	my ($space, $record) = @_;
+	my $ret = "";
 
 	my $id = '<undef>';
 	my ($uri,$txt);
@@ -155,21 +197,22 @@ sub fmt_record {
 		$id = "Unhandled type: $type";
 	}
 
-	printf "%s%s %s\n",
+	$ret .= sprintf "%s%s %s\n",
 		$space,
 		$type,
 		$id;
 
 	if (defined $uri) {
-		printf "%s%s\n",
+		$ret .= sprintf "%s%s\n",
 			$space,
 			$uri;
 	}
 	if (defined $txt) {
 		$txt =~ s/^/${space}/g;
-		printf "%s\n",
+		$ret .= sprintf "%s\n",
 			$txt;
 	}
+	return $ret;
 }
 
 sub lsdm {
@@ -180,17 +223,6 @@ sub lsdm {
 	if (!$response->is_success) {
 		my $dc = $response->decoded_content;
 		my $data = decode_json($dc);
-		# '{"error":"ExpiredToken","message":"Token has been revoked"}
-		if ($data->{error} eq "ExpiredToken") {
-			if ($data->{message} eq "Token has been revoked") {
-				$access_info->{handle} = undef;
-				$access_info->{accessJwt} = undef;
-				token_check();
-			} else {
-				token_refresh();
-			}
-			goto _redo_lsdm;
-		}
 	}
 
 	#print Dumper($response);
@@ -261,16 +293,16 @@ sub read_auth_info {
 	my $auth_file = 'auth.txt';
 	if (-e $auth_file) {
 		open my $fh, '<', $auth_file or die "Can't open $auth_file: $!";
-		my $access_info = { };
-		chomp($access_info->{handle} = <$fh>);
-		chomp($access_info->{refreshJwt} = <$fh>);
-		chomp($access_info->{accessJwt} = <$fh>);
+		my $ainfo = { };
+		chomp($ainfo->{handle} = <$fh>);
+		chomp($ainfo->{refreshJwt} = <$fh>);
+		chomp($ainfo->{accessJwt} = <$fh>);
 		my $tmp = <$fh>;
 		if (defined $tmp) {
 			chomp($access_info->{last_refresh} = $tmp);
 		}
 		close $fh;
-		return $access_info;
+		return $ainfo;
 	} else {
 		return;
 	}
@@ -325,36 +357,52 @@ sub token_refresh {
 	);
 	my $response = _call(1, "post", $call);
 
-	if ($response->is_success) {
-		my $new_auth_info = decode_json($response->decoded_content);
-		$access_info->{accessJwt} = $new_auth_info->{accessJwt};
-		save_auth_info($access_info);
-		$client->{1}->default_header(
-			'Authorization' => "Bearer " . $access_info->{accessJwt}
-		);
-		return $access_info;
-	} else {
+	if (!$response->is_success) {
 		print "Failed to refresh token: " . $response->status_line . "\n";
 		die Dumper($response);
 	}
+
+	my $new_auth_info = decode_json($response->decoded_content);
+	$access_info->{accessJwt} = $new_auth_info->{accessJwt};
+	save_auth_info($access_info);
+	$client->{1}->default_header(
+		'Authorization' => "Bearer " . $access_info->{accessJwt}
+	);
+	return $access_info;
 }
 
 sub token_check {
+	if ($v>0) {
+		print "token_check...\n";
+	}
 	if (!defined $access_info) {
+		if ($v>0) {
+			print "token_check: calling read_auth_info()\n";
+		}
 		$access_info = read_auth_info();
 	}
 	my $handle;
 	if (!defined $access_info->{handle}) {
+		if ($v>0) {
+			print "token_check: !handle\n";
+		}
 		print "Enter your bsky.app handle: (like example.bsky.social) ";
 		chomp($handle = <STDIN>);
 		$access_info->{handle} = $handle;
 	}
 	if (!defined $access_info->{accessJwt}) {
+		if ($v>0) {
+			print "token_check: !accessJwt\n";
+		}
 		$handle = $access_info->{handle};
-		print "Enter your bsky.app password: ";
-		chomp(my $password = <STDIN>);
+		my $password = $access_info->{_pass};
+		if (!defined $password) {
+			print "Enter your bsky.app password: ";
+			chomp($password = <STDIN>);
+			$access_info->{_pass} = $password;
+		}
 		$access_info = authenticate($handle, $password);
-		print Dumper($access_info);
+		#print Dumper($access_info);
 		save_auth_info($access_info);
 	}
 	$client->{1}->default_header('Authorization' => "Bearer ".$access_info->{accessJwt});
@@ -451,6 +499,15 @@ sub _call {
 			print "data = undef, hmm. c:\n";
 			print Dumper($c);
 			die("_call status filure");
+		}
+		# '{"error":"ExpiredToken","message":"Token has been revoked"}
+		if ($data->{error} eq "ExpiredToken") {
+			if ($data->{message} eq "Token has been revoked") {
+				$access_info->{accessJwt} = undef;
+				token_check();
+			} else {
+				token_refresh();
+			}
 		}
 		my $err = "";
 		if (defined $data->{status}) {
