@@ -24,6 +24,8 @@ use Storable qw(freeze thaw);
 use Data::Dumper;
 use Date::Manip;
 
+$Data::Dumper::Sortkeys = 1;
+
 # handle wide chars w/out warning
 binmode(STDOUT, ":encoding(UTF-8)");
 binmode(STDERR, ":encoding(UTF-8)");
@@ -51,6 +53,10 @@ $client->{1}->default_header('Atproto-Proxy' => 'did:web:api.bsky.chat#bsky_chat
 $client->{1}->default_header('Content-Type' => 'application/json');
 
 token_check();
+
+our $cache = { };
+
+# {$call}->{ retrieved => time(); data => $data }
 
 if (defined $opt_a) {
 	if ($opt_a eq "post") {
@@ -83,18 +89,22 @@ if (defined $opt_a) {
 	if ($opt_a eq "feed") {
 		ck_feed(@ARGV);
 	}
+	if ($opt_a eq "myfeed") {
+		ck_myfeed(@ARGV);
+	}
+	if ($opt_a eq "getSession") {
+		getSession();
+		exit(0);
+	}
 }
 
 exit(0);
 
-sub ck_feed {
-	my ($feedname) = @_;
-	my $call = "app.bsky.feed.getListFeed";
-	$call = "app.bsky.feed.getFeed";
-	#my $feed = "at://did:plc:jcoy7v3a2t4rcfdh6i4kza25/app.bsky.graph.list/astro";
-	my $feed = "at://did:plc:jcoy7v3a2t4rcfdh6i4kza25/app.bsky.feed.generator/$feedname";
-	#my $c = get1( $call."?list=$feed");
-	my $c = get1( $call."?feed=$feed");
+sub ck_myfeed {
+	my @args = @_;
+	my $call = "app.bsky.feed.getActorFeed";
+	my $did = getSession()->{did};
+	my $c = get1( $call."?actor=$did");
 	if (!$c->is_success) {
 		print "notifcation.list: ".Dumper($c);
 		exit(0);
@@ -662,4 +672,25 @@ sub getrec {
 		}
 	}
 	die "getrec bad url: $url";
+}
+sub getSession {
+	my $call = "com.atproto.server.getSession";
+	if (defined $cache->{$call}->{data}) {
+		# if ($cache->{$call}->{retrieved} < ( time()-3600) {
+		return $cache->{$call}->{data};
+		# }
+	}
+	my $c = get1($call);
+	if (! $c->is_success) {
+		print "c = ".Dumper($c);
+		die("getSession");
+	}
+	my $dc = $c->decoded_content;
+	my $data = decode_json($dc);
+	# see json/getSession.log
+	#print "data = ".Dumper($data);
+
+	$cache->{$call}->{retrieved} = time();
+	$cache->{$call}->{data} = $data;
+	return $data;
 }
