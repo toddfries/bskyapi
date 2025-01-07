@@ -37,8 +37,12 @@ our $access_info;
 our $opt_a; # action
 our $opt_v; # verbose
 our $opt_W; # reply post url
+our $opt_c; # auth.json filename
 
-getopts('a:vW:');
+# defaults
+$opt_c = $ENV{'HOME'}."/.config/bsky/auth.json";
+
+getopts('a:c:vW:');
 
 our $v = 0;
 if (defined $opt_v) {
@@ -561,7 +565,7 @@ sub getrec {
 
 # Function to read authentication information from file
 sub read_auth_info {
-	my $auth_file = 'auth.txt';
+	my $auth_file = $opt_c;
 	if (-e $auth_file) {
 		open my $fh, '<', $auth_file or die "Can't open $auth_file: $!";
 		my $ainfo = { };
