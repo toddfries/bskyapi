@@ -298,26 +298,6 @@ sub post {
 	}
 }
 
-# Function to read authentication information from file
-sub read_auth_info {
-	my $auth_file = 'auth.txt';
-	if (-e $auth_file) {
-		open my $fh, '<', $auth_file or die "Can't open $auth_file: $!";
-		my $ainfo = { };
-		chomp($ainfo->{handle} = <$fh>);
-		chomp($ainfo->{refreshJwt} = <$fh>);
-		chomp($ainfo->{accessJwt} = <$fh>);
-		my $tmp = <$fh>;
-		if (defined $tmp) {
-			chomp($access_info->{last_refresh} = $tmp);
-		}
-		close $fh;
-		return $ainfo;
-	} else {
-		return;
-	}
-}
-
 sub resolve_handle {
 	my ($handle) = @_;
 
@@ -325,105 +305,6 @@ sub resolve_handle {
 	my $dc = $c->decoded_content;
 	my $data = decode_json($dc);
 	return $data->{did};
-}
-
-# Function to authenticate and get access token
-sub authenticate {
-	my ($handle, $password) = @_;
-	my $req = {
-			identifier => $handle,
-			password => $password
-	};
-	my $call = 'com.atproto.server.createSession';
-	my $response = _call(1, "post", $call, $req);
-
-	if ($response->is_success) {
-		my $auth_info = decode_json($response->decoded_content);
-		return $auth_info;
-	} else {
-		print "Failed to authenticate: " . $response->status_line . "\n";
-		die Dumper($response);
-	}
-}
-
-# Function to save authentication token to file
-sub save_auth_info {
-	my $access_info = shift;
-	print "access_info = ".Dumper($access_info);
-	my $auth_file = 'auth.txt';
-	open my $fh, '>', $auth_file or die "Cannot open $auth_file: $!";
-	printf $fh "%s\n", $access_info->{handle};
-	printf $fh "%s\n", $access_info->{refreshJwt};
-	printf $fh "%s\n", $access_info->{accessJwt};
-	printf $fh "%s\n", time; # save when last refresh occurred
-	close $fh;
-}
-
-
-sub token_refresh {
-	my $call = 'com.atproto.server.refreshSession';
-	$client->{1}->default_header(
-		'Authorization' => "Bearer " . $access_info->{refreshJwt}
-	);
-	my $response = _call(1, "post", $call);
-
-	if (!$response->is_success) {
-		print "Failed to refresh token: " . $response->status_line . "\n";
-		die Dumper($response);
-	}
-
-	my $new_auth_info = decode_json($response->decoded_content);
-	$access_info->{accessJwt} = $new_auth_info->{accessJwt};
-	save_auth_info($access_info);
-	$client->{1}->default_header(
-		'Authorization' => "Bearer " . $access_info->{accessJwt}
-	);
-	return $access_info;
-}
-
-sub token_check {
-	if ($v>0) {
-		print "token_check...\n";
-	}
-	if (!defined $access_info) {
-		if ($v>0) {
-			print "token_check: calling read_auth_info()\n";
-		}
-		$access_info = read_auth_info();
-	}
-	my $handle;
-	if (!defined $access_info->{handle}) {
-		if ($v>0) {
-			print "token_check: !handle\n";
-		}
-		print "Enter your bsky.app handle: (like example.bsky.social) ";
-		chomp($handle = <STDIN>);
-		$access_info->{handle} = $handle;
-	}
-	if (!defined $access_info->{accessJwt}) {
-		if ($v>0) {
-			print "token_check: !accessJwt\n";
-		}
-		$handle = $access_info->{handle};
-		my $password = $access_info->{_pass};
-		if (!defined $password) {
-			print "Enter your bsky.app password: ";
-			chomp($password = <STDIN>);
-			$access_info->{_pass} = $password;
-		}
-		$access_info = authenticate($handle, $password);
-		#print Dumper($access_info);
-		save_auth_info($access_info);
-	}
-	$client->{1}->default_header('Authorization' => "Bearer ".$access_info->{accessJwt});
-
-	# Implement logic here, e.g., time check or error handling for expired tokens
-	# For a simple time check:
-	my $current_time = time;
-	my $last_refresh_time = $access_info->{last_refresh} // 0; # Assuming you save this somewhere
-	if ($current_time - $last_refresh_time > 7200) {
-		$access_info = token_refresh();
-	}
 }
 
 sub get1 {
@@ -673,6 +554,129 @@ sub getrec {
 	}
 	die "getrec bad url: $url";
 }
+
+#
+# oauth2 - gotta learn it once!
+#
+
+# Function to read authentication information from file
+sub read_auth_info {
+	my $auth_file = 'auth.txt';
+	if (-e $auth_file) {
+		open my $fh, '<', $auth_file or die "Can't open $auth_file: $!";
+		my $ainfo = { };
+		chomp($ainfo->{handle} = <$fh>);
+		chomp($ainfo->{refreshJwt} = <$fh>);
+		chomp($ainfo->{accessJwt} = <$fh>);
+		my $tmp = <$fh>;
+		if (defined $tmp) {
+			chomp($access_info->{last_refresh} = $tmp);
+		}
+		close $fh;
+		return $ainfo;
+	} else {
+		return;
+	}
+}
+
+# Function to save authentication token to file
+sub save_auth_info {
+	my $access_info = shift;
+	print "access_info = ".Dumper($access_info);
+	my $auth_file = 'auth.txt';
+	open my $fh, '>', $auth_file or die "Cannot open $auth_file: $!";
+	printf $fh "%s\n", $access_info->{handle};
+	printf $fh "%s\n", $access_info->{refreshJwt};
+	printf $fh "%s\n", $access_info->{accessJwt};
+	printf $fh "%s\n", time; # save when last refresh occurred
+	close $fh;
+}
+
+# Function to authenticate and get access token
+sub authenticate {
+	my ($handle, $password) = @_;
+	my $req = {
+			identifier => $handle,
+			password => $password
+	};
+	my $call = 'com.atproto.server.createSession';
+	my $response = _call(1, "post", $call, $req);
+
+	if ($response->is_success) {
+		my $auth_info = decode_json($response->decoded_content);
+		return $auth_info;
+	} else {
+		print "Failed to authenticate: " . $response->status_line . "\n";
+		die Dumper($response);
+	}
+}
+
+sub token_refresh {
+	my $call = 'com.atproto.server.refreshSession';
+	$client->{1}->default_header(
+		'Authorization' => "Bearer " . $access_info->{refreshJwt}
+	);
+	my $response = _call(1, "post", $call);
+
+	if (!$response->is_success) {
+		print "Failed to refresh token: " . $response->status_line . "\n";
+		die Dumper($response);
+	}
+
+	my $new_auth_info = decode_json($response->decoded_content);
+	$access_info->{accessJwt} = $new_auth_info->{accessJwt};
+	save_auth_info($access_info);
+	$client->{1}->default_header(
+		'Authorization' => "Bearer " . $access_info->{accessJwt}
+	);
+	return $access_info;
+}
+
+sub token_check {
+	if ($v>0) {
+		print "token_check...\n";
+	}
+	if (!defined $access_info) {
+		if ($v>0) {
+			print "token_check: calling read_auth_info()\n";
+		}
+		$access_info = read_auth_info();
+	}
+	my $handle;
+	if (!defined $access_info->{handle}) {
+		if ($v>0) {
+			print "token_check: !handle\n";
+		}
+		print "Enter your bsky.app handle: (like example.bsky.social) ";
+		chomp($handle = <STDIN>);
+		$access_info->{handle} = $handle;
+	}
+	if (!defined $access_info->{accessJwt}) {
+		if ($v>0) {
+			print "token_check: !accessJwt\n";
+		}
+		$handle = $access_info->{handle};
+		my $password = $access_info->{_pass};
+		if (!defined $password) {
+			print "Enter your bsky.app password: ";
+			chomp($password = <STDIN>);
+			$access_info->{_pass} = $password;
+		}
+		$access_info = authenticate($handle, $password);
+		#print Dumper($access_info);
+		save_auth_info($access_info);
+	}
+	$client->{1}->default_header('Authorization' => "Bearer ".$access_info->{accessJwt});
+
+	# Implement logic here, e.g., time check or error handling for expired tokens
+	# For a simple time check:
+	my $current_time = time;
+	my $last_refresh_time = $access_info->{last_refresh} // 0; # Assuming you save this somewhere
+	if ($current_time - $last_refresh_time > 7200) {
+		$access_info = token_refresh();
+	}
+}
+
 sub getSession {
 	my $call = "com.atproto.server.getSession";
 	if (defined $cache->{$call}->{data}) {
