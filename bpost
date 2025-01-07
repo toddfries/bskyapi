@@ -274,6 +274,7 @@ sub bpost {
 	my ($text) = @_;
 	my $call = 'com.atproto.repo.createRecord';
 	my $maxsize=300;
+	my $repo = resolve_handle($access_info->{handle});
 
 	if (length($text) > $maxsize) {
 		my $msgleft = $text;
@@ -282,6 +283,9 @@ sub bpost {
 		while (1) {
 			if (!defined $msgleft) {
 				last;
+			}
+			if (length($msgleft) <= $maxsize) {
+				return bpost($msgleft);
 			}
 			printf "msgleft='%s'\n", $msgleft;
 			my $thismemo = "";
@@ -294,7 +298,7 @@ sub bpost {
 			printf "poststr='%s'\n", $poststr;
 			printf "msgleft='%s'\n", $msgleft;
 			$post = bpost($poststr);
-			if (defined $post->{cid}) {
+			if (defined $post->{commit}->{rev}) {
 				$opt_W = sprintf("https://bsky.app/profile/%s/post/%s",
 					$access_info->{handle},
 					$post->{commit}->{rev});
@@ -303,7 +307,7 @@ sub bpost {
 		return $post;
 	}
 	my $data = {
-		repo => $access_info->{handle},
+		repo => $repo,
 		collection => "app.bsky.feed.post",
 		record => {
 			"text" => $text,
@@ -327,18 +331,24 @@ sub bpost {
 	}
 	my $dc = $response->decoded_content;
 	my $post = decode_json($dc);
-	my $repo = $access_info->{handle};
-	printf "https://bsky.app/profile/%s/post/%s\n", $repo, $post->{commit}->{rev};
+	printf "https://bsky.app/profile/%s/post/%s\n", $access_info->{handle}, $post->{commit}->{rev};
 	print "Posted to bsky.app successfully.\n";
 	return $post;
 }
 
 sub resolve_handle {
 	my ($handle) = @_;
+	my $call = "com.atproto.identity.resolveHandle?handle=$handle";
+	my $data = cache_read($call);
+	if (defined $data) {
+		return $data;
+	}
 
-	my $c = get1( "com.atproto.identity.resolveHandle?handle=$handle" );
+	my $c = get1( $call );
 	my $dc = $c->decoded_content;
-	my $data = decode_json($dc);
+	$data = decode_json($dc);
+
+	cache_write($call, $data);
 	return $data->{did};
 }
 
@@ -462,7 +472,7 @@ sub _call {
 			$estat .= "\n";
 		}
 		print STDERR $err.$estat;
-		die("Today is a good day to die.");
+		die("Today is a good day to die: ".$c->status_line);
 	}
 	return $c;
 }
@@ -614,7 +624,7 @@ sub read_auth_info {
 sub save_auth_info {
 	my $access_info = shift;
 	#print "access_info = ".Dumper($access_info);
-	my $auth_file = 'auth.txt';
+	my $auth_file = $opt_c;
 	open my $fh, '>', $auth_file or die "Cannot open $auth_file: $!";
 	print $fh encode_json($access_info);
 	print $fh "\n";
@@ -718,9 +728,10 @@ sub token_check {
 
 sub getSession {
 	my $call = "com.atproto.server.getSession";
-	if (defined $cache->{$call}->{data}) {
-		# if ($cache->{$call}->{retrieved} < ( time()-3600) {
-		return $cache->{$call}->{data};
+	my $data = cache_read($call);
+	if (defined $data) {
+		# if ($cache->{$call}->{time} < (time() - 3600)) {
+		return $data;
 		# }
 	}
 	my $c = get1($call);
@@ -730,13 +741,25 @@ sub getSession {
 	}
 	printf "getSession: %s = SUCCESS!\n", $call;
 	my $dc = $c->decoded_content;
-	my $data = decode_json($dc);
+	$data = decode_json($dc);
 	# see json/getSession.log
 	#print "data = ".Dumper($data);
 
-	$cache->{$call}->{retrieved} = time();
-	$cache->{$call}->{data} = $data;
+	cache_write($call, $data);
 	return $data;
+}
+
+sub cache_read {
+	my ($var) = @_;
+
+	my $data = $cache->{$var}->{data};
+	return $data;
+}
+sub cache_write {
+	my ($var, $val) = @_;
+
+	$cache->{$var}->{time} = time();
+	$cache->{$var}->{data} = $val;
 }
 
 sub xsplitmsg {
