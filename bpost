@@ -159,7 +159,7 @@ sub ck_notifications {
 		# 'starterpack-joined'
 		my $noteuri= $note->{uri};
 		my $record = $note->{record}; # createdAt, subject, $type
-		my $cid    = $note->{cid};
+		my $cid	= $note->{cid};
 		my $idxtime= $note->{indexedAt};
 		my $cretime= $note->{record}->{createdAt};
 		my $who=fmt_author($author);
@@ -168,7 +168,7 @@ sub ck_notifications {
 			$reason,
 			$cretime,
 			$who;
-		print fmt_record('     ', $note->{record})."\n";
+		print fmt_record('	 ', $note->{record})."\n";
 	}
 	exit(0);
 }
@@ -617,12 +617,20 @@ sub token_refresh {
 	my $response = _call(1, "post", $call);
 
 	if (!$response->is_success) {
-		print "Failed to refresh token: ".$response->status_line . "\n";
-		die Dumper($response);
+		my $dc = $response->decoded_content;
+		my $data = decode_json($dc);
+		if ($data->{error} eq "ExpiredToken" || $data->{error} eq "InvalidToken") {
+			# Handle expired or invalid refresh token, e.g., prompt for new credentials
+			warn "Refresh token has expired or is invalid. Please re-authenticate.";
+			$access_info = authenticate($access_info->{handle}, $access_info->{_pass});
+		} else {
+			die "Failed to refresh token: " . $response->status_line . "\n" . Dumper($response);
+		}
 	}
 
 	my $new_auth_info = decode_json($response->decoded_content);
 	$access_info->{accessJwt} = $new_auth_info->{accessJwt};
+	$access_info->{last_refresh} = time;  # Update last refresh time
 	save_auth_info($access_info);
 	$client->{1}->default_header(
 		'Authorization' => "Bearer ".$access_info->{accessJwt}
@@ -689,7 +697,7 @@ sub getSession {
 		print "c = ".Dumper($c);
 		die("getSession");
 	}
-	print "getSession: %s = SUCCESS!\n", $call;
+	printf "getSession: %s = SUCCESS!\n", $call;
 	my $dc = $c->decoded_content;
 	my $data = decode_json($dc);
 	# see json/getSession.log
