@@ -685,6 +685,7 @@ sub getSession {
 		print "c = ".Dumper($c);
 		die("getSession");
 	}
+	print "getSession: %s = SUCCESS!\n", $call;
 	my $dc = $c->decoded_content;
 	my $data = decode_json($dc);
 	# see json/getSession.log
