@@ -64,7 +64,7 @@ our $cache = { };
 
 if (defined $opt_a) {
 	if ($opt_a eq "post") {
-		post($ARGV[0]);
+		bpost($ARGV[0]);
 		exit(0);
 	}
 	if ($opt_a eq "lsdm") {
@@ -270,18 +270,45 @@ sub lsdm {
 	return $response;
 }
 
-sub post {
+sub bpost {
 	my ($text) = @_;
 	my $call = 'com.atproto.repo.createRecord';
+	my $maxsize=300;
 
-	# Example: Post to bsky.app using the obtained access token
+	if (length($text) > $maxsize) {
+		my $msgleft = $text;
+		my $count=1;
+		my $post;
+		while (1) {
+			if (!defined $msgleft) {
+				last;
+			}
+			printf "msgleft='%s'\n", $msgleft;
+			my $thismemo = "";
+			if ($count > 1) {
+				$thismemo = sprintf "%d/ ", $count;
+			}
+			my $newmsg = $thismemo.$msgleft;
+			my $poststr;
+			($poststr, $msgleft) = xsplitmsg($newmsg, $maxsize);
+			printf "poststr='%s'\n", $poststr;
+			printf "msgleft='%s'\n", $msgleft;
+			$post = bpost($poststr);
+			if (defined $post->{cid}) {
+				$opt_W = sprintf("https://bsky.app/profile/%s/post/%s",
+					$access_info->{handle},
+					$post->{commit}->{rev});
+			}
+		}
+		return $post;
+	}
 	my $data = {
-	repo => $access_info->{handle},
-	collection => "app.bsky.feed.post",
-	record => {
-		"text" => $text,
-		"createdAt" => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime),
-	},
+		repo => $access_info->{handle},
+		collection => "app.bsky.feed.post",
+		record => {
+			"text" => $text,
+			"createdAt" => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime),
+		},
 	};
 
 	if (defined $opt_W) {
@@ -295,11 +322,15 @@ sub post {
 	my $response = post1( $call, $data );
 
 	#print Dumper($response);
-	if ($response->is_success) {
-		print "Posted to bsky.app successfully.\n";
-	} else {
+	if (!$response->is_success) {
 		die "Failed to post to bsky.app: ".$response->status_line;
 	}
+	my $dc = $response->decoded_content;
+	my $post = decode_json($dc);
+	my $repo = $access_info->{handle};
+	printf "https://bsky.app/profile/%s/post/%s\n", $repo, $post->{commit}->{rev};
+	print "Posted to bsky.app successfully.\n";
+	return $post;
 }
 
 sub resolve_handle {
@@ -706,4 +737,36 @@ sub getSession {
 	$cache->{$call}->{retrieved} = time();
 	$cache->{$call}->{data} = $data;
 	return $data;
+}
+
+sub xsplitmsg {
+	my ($msg, $maxsize) = @_;
+
+	# try by line first
+	my @lines = split(/\n/, $msg);
+	my $line = $lines[0];
+	my $poststr = $line."\n";
+	# attempt to split on lines...
+	if (length($line) < $maxsize) {
+		my $msgleft = substr($msg, length($poststr)+1);
+		my $i = 1;
+		while (1) {
+			$line = $lines[$i++];
+			if (!defined $line) {
+				return ($poststr, $msgleft);
+			}
+			if ( (length($poststr) + length($line) + 1) >
+				$maxsize) {
+				return ($poststr, $msgleft);
+			}
+			$poststr .= $line . "\n";
+			$msgleft = substr($msgleft, length($line)+1);
+		}
+		die("We have reached the bermuda triangle!");
+	}
+	# XXX insert split on words
+	# ... otherwise, split on chars.
+	$poststr = substr($msg, 0, $maxsize);
+	my $msgleft = substr($msg, length($poststr));
+	return ($poststr, $msgleft);
 }
