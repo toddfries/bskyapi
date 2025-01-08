@@ -286,15 +286,16 @@ sub bpost {
 			if (!defined $msgleft) {
 				last;
 			}
-			if (length($msgleft) <= $maxsize) {
-				return bpost($msgleft);
-			}
 			printf "msgleft='%s'\n", $msgleft;
 			my $thismemo = "";
 			if ($count > 1) {
 				$thismemo = sprintf "%d/ ", $count;
 			}
+			$count++;
 			my $newmsg = $thismemo.$msgleft;
+			if (length($newmsg) <= $maxsize) {
+				return bpost($newmsg);
+			}
 			my $poststr;
 			($poststr, $msgleft) = xsplitmsg($newmsg, $maxsize);
 			printf "poststr='%s'\n", $poststr;
@@ -395,7 +396,7 @@ sub _call {
 	_redo_action:
 	if ($v>0 || 1) {
 		printf "v$ver $type query=${query} @ %s\n", strftime( "%Y%m%d %H:%M:%S", localtime());
-		if ($type eq "post") {
+		if ($type eq "post" && $v>0) {
 			print "   payload: ".Dumper($pdata);
 		}
 	}
@@ -575,11 +576,15 @@ sub getrec {
 		my $repo = $1;
 		my $postid = $2;
 		my $c = get1("com.atproto.repo.getRecord?repo=${repo}&collection=app.bsky.feed.post&rkey=$postid");
+		if ($v>0) {
 		print "getrec: ";
+		}
 		if ($c->is_success) {
 			my $dc = $c->decoded_content;
 			my $data = decode_json($dc);
+			if ($v>0) {
 			print "data = ".Dumper($data);
+			}
 			my $parent = {
 				cid => $data->{cid},
 				uri => $data->{uri},
